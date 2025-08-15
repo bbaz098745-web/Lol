@@ -1,8 +1,8 @@
-# جلب المفتاح من Microsoft
-curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | sudo tee /usr/share/keyrings/microsoft.gpg > /dev/null
+# حذف VS Code
+sudo apt remove --purge code
 
-# تعديل ملف المستودع إذا لزم
-sudo sed -i 's|https://packages.microsoft.com/repos/code|[signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code|' /etc/apt/sources.list.d/vscode.list
+# حذف ملف المستودع
+sudo rm /etc/apt/sources.list.d/vscode.list
 
-# تحديث الحزم
+# تحديث النظام
 sudo apt update
