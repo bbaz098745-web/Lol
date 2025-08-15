@@ -1,0 +1,2 @@
+mkdir -p ~/.local/share/xed/plugins/js_dev_plugin
+cd ~/.local/share/xed/plugins/js_dev_plugin

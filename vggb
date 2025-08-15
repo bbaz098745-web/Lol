@@ -1,0 +1,8 @@
+[Plugin]
+Name=JS Dev Helper
+Description=Lightweight JS helper: auto-save on blank line, Run and Debug buttons, counts & error indicator
+Authors=YourName
+Website=https://example.local
+Copyright=2025
+Loader=python3
+Module=js_dev_plugin

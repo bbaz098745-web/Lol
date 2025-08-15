@@ -1,0 +1,250 @@
+# ~/.local/share/xed/plugins/js_dev_plugin/js_dev_plugin.py
+from gi.repository import GObject, Gtk, Gdk, Gedit, Gio
+import os
+import subprocess
+import threading
+import time
+
+class JsDevPlugin(GObject.Object, Gedit.WindowActivatable):
+    __gtype_name__ = "JsDevPlugin"
+    window = GObject.Property(type=Gedit.Window)
+
+    def __init__(self):
+        GObject.Object.__init__(self)
+        self.handlers = {}
+        self.output_term = None
+        self.last_saved_time = 0
+
+    def do_activate(self):
+        self._insert_ui()
+
+    def do_deactivate(self):
+        self._remove_ui()
+
+    def do_update_state(self):
+        pass
+
+    def _insert_ui(self):
+        # Toolbar button container
+        tb = self.window.get_toolbar()
+        # Create container box
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_name("js-dev-box")
+
+        # Run button
+        run_btn = Gtk.Button(label="Run")
+        run_btn.connect("clicked", self.on_run_clicked)
+        box.pack_start(run_btn, False, False, 0)
+
+        # Debug button
+        dbg_btn = Gtk.Button(label="Debug")
+        dbg_btn.connect("clicked", self.on_debug_clicked)
+        box.pack_start(dbg_btn, False, False, 0)
+
+        # Spacer
+        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        box.pack_start(sep, False, False, 6)
+
+        # Error indicator (circle)
+        error_event_box = Gtk.EventBox()
+        error_event_box.set_visible_window(False)
+        self.error_area = Gtk.DrawingArea()
+        self.error_area.set_size_request(12,12)
+        self._draw_error(False)
+        error_event_box.add(self.error_area)
+        box.pack_start(error_event_box, False, False, 6)
+        error_event_box.connect("button-press-event", self.on_error_clicked)
+
+        # Status label for counts
+        self.count_label = Gtk.Label(label="Lines: 0  Words: 0  Chars: 0")
+        box.pack_start(self.count_label, False, False, 6)
+
+        # pack box into toolbar
+        tb.insert(box, 0)
+        tb.show_all()
+        self.ui_box = box
+
+        # connect to view signals
+        for view in self._get_all_views():
+            handler = view.connect("key-press-event", self.on_key_press)
+            self.handlers[view] = handler
+            view.connect("notify::buffer", self.on_buffer_changed)
+
+        # watch for newly opened views
+        self.window.connect("tab-added", self.on_tab_added)
+
+    def _remove_ui(self):
+        try:
+            tb = self.window.get_toolbar()
+            tb.remove(self.ui_box)
+        except Exception:
+            pass
+        # disconnect handlers
+        for view, h in list(self.handlers.items()):
+            try:
+                view.disconnect(h)
+            except Exception:
+                pass
+        self.handlers.clear()
+
+    def _get_all_views(self):
+        views = []
+        for doc in self.window.get_documents():
+            view = self.window.get_view_for_document(doc)
+            if view:
+                views.append(view)
+        return views
+
+    def on_tab_added(self, window, tab):
+        view = self.window.get_active_view()
+        if view and view not in self.handlers:
+            handler = view.connect("key-press-event", self.on_key_press)
+            self.handlers[view] = handler
+
+    def on_key_press(self, view, event):
+        # When user presses Return, check for blank new line -> auto-save
+        keyval = event.keyval
+        keyname = Gdk.keyval_name(keyval)
+        if keyname == "Return":
+            # small delay to let buffer update
+            GObject.idle_add(self.check_and_autosave, view)
+        # update counts asynchronously
+        GObject.idle_add(self.update_counts, view)
+        return False
+
+    def on_buffer_changed(self, view, param):
+        GObject.idle_add(self.update_counts, view)
+
+    def update_counts(self, view):
+        try:
+            buf = view.get_buffer()
+            text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+            lines = text.count("\n") + (0 if text.endswith("\n") else 1 if text else 0)
+            words = len(text.split())
+            chars = len(text)
+            self.count_label.set_text(f"Lines: {lines}  Words: {words}  Chars: {chars}")
+        except Exception:
+            pass
+        return False
+
+    def check_and_autosave(self, view):
+        try:
+            buf = view.get_buffer()
+            iter_end = buf.get_end_iter()
+            # Check last two characters: if last char is '\n' (i.e., blank line exists at end)
+            # We'll inspect end iter -1 and -2 carefully
+            start = buf.get_start_iter()
+            full = buf.get_text(start, iter_end, True)
+            # If last character is newline -> there's an empty line at the end (user pressed Enter then left blank)
+            if full.endswith("\n"):
+                # Save document associated to this view
+                doc = view.get_buffer().get_document()
+                if doc and doc.get_uri():
+                    # only save if document has a file location (not untitled)
+                    if doc.get_location():
+                        # use GIO save
+                        try:
+                            doc.save(None, None)
+                            self.last_saved_time = time.time()
+                        except Exception:
+                            pass
+            # update counts
+            self.update_counts(view)
+        except Exception:
+            pass
+        return False
+
+    def on_run_clicked(self, widget):
+        view = self.window.get_active_view()
+        if not view:
+            return
+        doc = view.get_buffer().get_document()
+        if not doc:
+            return
+        location = None
+        try:
+            location = doc.get_location()
+        except Exception:
+            pass
+        if not location:
+            # try to ask user to save
+            dialog = Gtk.MessageDialog(self.window, 0, Gtk.MessageType.INFO,
+                Gtk.ButtonsType.OK_CANCEL, "الملف لم يُحفظ بعد. الرجاء حفظ الملف أولاً.")
+            dialog.format_secondary_text("قم بحفظ الملف على القرص قبل التشغيل.")
+            response = dialog.run()
+            dialog.destroy()
+            return
+
+        filepath = location.get_path()
+        if not filepath or not filepath.endswith(".js"):
+            dlg = Gtk.MessageDialog(self.window, 0, Gtk.MessageType.WARNING,
+                Gtk.ButtonsType.OK, "الملف الحالي ليس ملف JavaScript (.js)")
+            dlg.run()
+            dlg.destroy()
+            return
+
+        # save before running
+        try:
+            doc.save(None, None)
+        except Exception:
+            pass
+
+        # run in bottom terminal: use xfce4-terminal with geometry placed at bottom
+        term_cmd = ["xfce4-terminal", "--title", "JS-Run-Output", "--hide-menubar", "-x", "bash", "-lc",
+                    f"node '{filepath}'; echo; echo 'Press ENTER to close...'; read -r"]
+        subprocess.Popen(term_cmd)
+
+    def on_debug_clicked(self, widget):
+        view = self.window.get_active_view()
+        if not view:
+            return
+        doc = view.get_buffer().get_document()
+        if not doc:
+            return
+        location = None
+        try:
+            location = doc.get_location()
+        except Exception:
+            pass
+        if not location:
+            dialog = Gtk.MessageDialog(self.window, 0, Gtk.MessageType.INFO,
+                Gtk.ButtonsType.OK_CANCEL, "الملف لم يُحفظ بعد. الرجاء حفظ الملف أولاً.")
+            dialog.format_secondary_text("قم بحفظ الملف على القرص قبل التشغيل في وضع التصحيح.")
+            response = dialog.run()
+            dialog.destroy()
+            return
+
+        filepath = location.get_path()
+        if not filepath or not filepath.endswith(".js"):
+            dlg = Gtk.MessageDialog(self.window, 0, Gtk.MessageType.WARNING,
+                Gtk.ButtonsType.OK, "الملف الحالي ليس ملف JavaScript (.js)")
+            dlg.run()
+            dlg.destroy()
+            return
+
+        # save before debug
+        try:
+            doc.save(None, None)
+        except Exception:
+            pass
+
+        # launch node inspector
+        port = 9229
+        term_cmd = ["xfce4-terminal", "--title", "JS-Debug-Output", "--hide-menubar", "-x", "bash", "-lc",
+                    f"node --inspect-brk '{filepath}' ; echo; echo 'Press ENTER to close...'; read -r"]
+        subprocess.Popen(term_cmd)
+        # we don't open browser automatically; user can open chrome://inspect to connect
+
+    def _draw_error(self, has_error):
+        # draw a red circle if has_error True, else grey
+        cr = self.error_area.get_window()
+        ctx = self.error_area.get_style_context()
+        # We cannot draw here directly; instead change background/pixbuf via CSS
+        if has_error:
+            color = "#ff3333"
+        else:
+            color = "#999999"
+        css = "* { background-color: transparent; }"
+        # we will use style context to set color via CSS class if needed
+        # simple approach: force a tooltip showing error or not
+        self.error_area.queue_draw()
