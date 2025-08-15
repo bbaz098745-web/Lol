@@ -1,0 +1,8 @@
+# جلب المفتاح من Microsoft
+curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | sudo tee /usr/share/keyrings/microsoft.gpg > /dev/null
+
+# تعديل ملف المستودع إذا لزم
+sudo sed -i 's|https://packages.microsoft.com/repos/code|[signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code|' /etc/apt/sources.list.d/vscode.list
+
+# تحديث الحزم
+sudo apt update
